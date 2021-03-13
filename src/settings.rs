@@ -70,23 +70,34 @@ impl Image {
     fn new<T>(image: T) -> Result<Image> where
         T: Into<String> + Display + Copy
     {
-        let image_with_scheme = format!("registry://{}", image);
-        let url = Url::parse(&image_with_scheme)?;
+        println!("about to parse: '{}'", image);
 
-        let registry = url.host().map(|host| {
-            match host {
-                Host::Domain(domain) => domain.into(),
-                Host::Ipv4(address) => format!("{}", address),
-                Host::Ipv6(address) => format!("{}", address),
-            }
-        }).map(|host| {
-            url.port().map_or(host.clone(), |port| format!("{}:{}", host, port))
+        let image_with_scheme = format!("registry://{}", image);
+        let url = Url::parse(&image_with_scheme);
+
+        let registry = url.clone().and_then(|url| {
+            url.host().map(|host| {
+                match host {
+                    Host::Domain(domain) => domain.into(),
+                    Host::Ipv4(address) => format!("{}", address),
+                    Host::Ipv6(address) => format!("{}", address),
+                }
+            }).ok_or(url::ParseError::EmptyHost)
+        }).and_then(|host| {
+            url.clone().map(|url| url.port().map_or(host.clone(), |port| format!("{}:{}", host, port)))
         });
 
-        let parse_fqn = Regex::new(r"^/?(?P<fqn>[^:@]+)(:(?P<tag>[^@]+))?(@sha256:(?P<sha256>[A-Fa-f0-9]{64}))?$").unwrap();
+        let parse_fqn = Regex::new(r"^(registry://)?(?P<fqn>[^:@]+)(:(?P<tag>[^@]+))?(@sha256:(?P<sha256>[A-Fa-f0-9]{64}))?$").unwrap();
         let parse_image_name = Regex::new(r"(?P<image>.*)$").unwrap();
+        let parse_image_name_with_scheme = Regex::new(r"^registry://(?P<fqn>.*)$").unwrap();
 
-        parse_fqn.captures(url.path()).map(|captures| {
+        let parse_image_reference = if url.clone()?.path().is_empty() {
+            &parse_image_name_with_scheme
+        } else {
+            &parse_fqn
+        };
+
+        parse_image_reference.captures(format!("{}", url?).as_ref()).map(|captures| {
             (
                 captures.name("fqn").map(|fqn| fqn.as_str()),
                 captures.name("tag").map(|tag| tag.as_str()),
@@ -94,7 +105,7 @@ impl Image {
             )
         }).map(|(fqn, tag, sha256)| {
             Image {
-                registry,
+                registry: registry.ok(),
                 fqn: fqn.map_or(Default::default(), |fqn| fqn.to_string()),
                 tag: tag.map(|tag| tag.to_string()),
                 sha256: sha256.map(|sha256| sha256.to_string()),
